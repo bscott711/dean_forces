@@ -1,0 +1,27 @@
+[project]
+name = "dean-forces"
+version = "0.1.0"
+description = "Command-line tool for simulating and visualizing Inertial Lift vs Dean Drag in spiral microfluidic channels"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.3",
+    "pandas>=3.0.1",
+    "typer>=0.24.1",
+]
+
+[project.scripts]
+dean-force = "dean_forces.app:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
