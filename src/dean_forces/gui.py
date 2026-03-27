@@ -266,7 +266,12 @@ def run_gui():
         4. **Validity Penalty ($P_{De}$)**: Rezai model limit ($De > 30$).
 
         ### 3. Composite Design Score
-        $$Score = (0.40 \cdot T_{norm} + 0.40 \cdot O_{norm} + 0.20 \cdot R_{norm}) \times P_{Fab} \times P_{Re} \times P_{Shear} \times P_{De}$$
+        $$Score = (0.4 \cdot T_{norm} + 0.4 \cdot O_{norm} + 0.2 \cdot R_{norm}) \times P_{Fab} \times P_{Re} \times P_{Shear} \times P_{De} \times P_{Geom}$$
+        Where:
+        - $T_{norm}$ (Transport): Min-max normalized **Mean Dean Velocity** along the path.
+        - $O_{norm}$ (Outlet): Normalized focusing strength at the **final exit**.
+        - $R_{norm}$ (Robustness): Normalized focusing strength at the **weakest point** along the path.
+        - $P_{Geom}$ (Geometric): Penalty if the device exceeds the **24mm slide limit** or the **2mm inlet limit**.
         """)
 
 if __name__ == "__main__":

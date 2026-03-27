@@ -85,6 +85,8 @@ class DeanForcesSimulator:
         u_vals: np.ndarray,
         dh_um: np.ndarray,
         width_um: np.ndarray,
+        r_start_mm: float,
+        r_end_mm: float,
         model: DeanModel,
     ) -> np.ndarray:
         """Centralized scoring logic shared between CLI and GUI."""
@@ -122,12 +124,22 @@ class DeanForcesSimulator:
         if model == DeanModel.REZAI2017:
             validity_penalty = np.minimum(1.0, 30.0 / max_de)
 
+        # Geometric Constraints (User Request)
+        # 1. Slide limit: 25mm slide, outer diameter (2*R_end) < 24mm (1mm buffer)
+        P_geom = 1.0
+        if (2.0 * r_end_mm) > 24.0:
+            P_geom *= 0.1 # Strong penalty for oversized chip
+        
+        # 2. Inlet limit: 2x 1.5mm inlets + buffer implies R_start > 2.0mm
+        if r_start_mm < 2.0:
+            P_geom *= 0.1 # Strong penalty for insufficient inlet space
+
         # Composite score
         return (
             0.40 * transport_norm
             + 0.40 * outlet_focus_norm
             + 0.20 * robustness_norm
-        ) * validity_penalty * laminar_penalty * shear_penalty * P_fab
+        ) * validity_penalty * laminar_penalty * shear_penalty * P_fab * P_geom
 
     def design_sweep(
         self,
@@ -186,6 +198,8 @@ class DeanForcesSimulator:
             u_vals=rank_df["U_m_s"].to_numpy(),
             dh_um=rank_df["Dh_um"].to_numpy(),
             width_um=rank_df["width_um"].to_numpy(),
+            r_start_mm=r_start_mm,
+            r_end_mm=r_end_mm,
             model=model,
         )
         return rank_df.sort_values("score", ascending=False).reset_index(drop=True)
