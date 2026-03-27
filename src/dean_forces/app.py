@@ -67,6 +67,129 @@ class DeanForcesSimulator:
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _minmax(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        xmin = np.nanmin(x)
+        xmax = np.nanmax(x)
+        if np.isclose(xmax, xmin):
+            return np.ones_like(x)
+        return (x - xmin) / (xmax - xmin)
+
+    def calculate_design_score(
+        self,
+        mean_ud_mm_s: np.ndarray,
+        outlet_ratio: np.ndarray,
+        min_ratio: np.ndarray,
+        max_de: np.ndarray,
+        u_vals: np.ndarray,
+        dh_um: np.ndarray,
+        width_um: np.ndarray,
+        model: DeanModel,
+    ) -> np.ndarray:
+        """Centralized scoring logic shared between CLI and GUI."""
+        # Normalize metrics for ranking
+        # Cap focusing ratios at a "sufficient" level (e.g., 10x and 5x) 
+        # so that extreme values don't overwhelm the transport metrics.
+        # Outlet = final performance, Min = robustness along the path.
+        capped_outlet = np.minimum(outlet_ratio, 10.0)
+        capped_min = np.minimum(min_ratio, 5.0)
+
+        transport_norm = self._minmax(mean_ud_mm_s)
+        outlet_focus_norm = self._minmax(np.log10(1.0 + capped_outlet))
+        robustness_norm = self._minmax(np.log10(1.0 + capped_min))
+
+        # Fabrication / clogging penalty based on width (User suggestion)
+        # w_min = 60um (absolute printable), w_safe = 100um (reliable/clog-free)
+        w_min = 60.0
+        w_safe = 100.0
+        p_low = 0.2
+        
+        P_fab = np.ones_like(width_um)
+        P_fab[width_um < w_min] = 0.0 # Hard floor
+        mask = (width_um >= w_min) & (width_um < w_safe)
+        P_fab[mask] = p_low + (1.0 - p_low) * (width_um[mask] - w_min) / (w_safe - w_min)
+
+        # Laminar flow penalty (Mixing occurs as Re -> 2000)
+        re_vals = u_vals * (dh_um * 1e-6) * self.g.rho / self.g.mu
+        laminar_penalty = np.where(re_vals > 1000, np.maximum(0.05, 1.0 - (re_vals - 1000) / 1000), 1.0)
+
+        # Shear/Pressure penalty (Cells and delamination)
+        shear_penalty = np.where(u_vals > 1.5, np.maximum(0.5, 1.0 - 0.5 * (u_vals - 1.5) / 1.5), 1.0)
+
+        # Model validity penalty
+        validity_penalty = np.ones_like(max_de)
+        if model == DeanModel.REZAI2017:
+            validity_penalty = np.minimum(1.0, 30.0 / max_de)
+
+        # Composite score
+        return (
+            0.40 * transport_norm
+            + 0.40 * outlet_focus_norm
+            + 0.20 * robustness_norm
+        ) * validity_penalty * laminar_penalty * shear_penalty * P_fab
+
+    def design_sweep(
+        self,
+        dp_um: float,
+        height_um: float,
+        width_start_um: float,
+        width_end_um: float,
+        n_width: int,
+        u_start: float,
+        u_end: float,
+        n_u: int,
+        r_start_mm: float,
+        r_end_mm: float,
+        model: DeanModel,
+        alpha: float,
+    ) -> pd.DataFrame:
+        """Core sweep logic for design optimization (Single Source of Truth)."""
+        widths = np.linspace(width_start_um, width_end_um, n_width)
+        velocities = np.linspace(u_start, u_end, n_u)
+
+        rows = []
+        for w in widths:
+            # We must recreate the geometry for each width in the sweep
+            sweep_sim = DeanForcesSimulator(Geometry(width_um=w, height_um=height_um))
+            for u in velocities:
+                df = sweep_sim.spiral_sweep(
+                    u=u,
+                    dp_um=dp_um,
+                    r_start_mm=r_start_mm,
+                    r_end_mm=r_end_mm,
+                    model=model,
+                    alpha=alpha,
+                    quiet=True,
+                )
+
+                rows.append({
+                    "width_um": w,
+                    "height_um": height_um,
+                    "Dh_um": sweep_sim.g.dh_m * 1e6,
+                    "U_m_s": u,
+                    "dp_um": dp_um,
+                    "R_start_mm": r_start_mm,
+                    "R_end_mm": r_end_mm,
+                    "mean_Ud_mm_s": df["Ud_m_s"].mean() * 1e3,
+                    "outlet_FL_over_FD": float(df["FL_over_FD"].iloc[-1]),
+                    "min_FL_over_FD": float(df["FL_over_FD"].min()),
+                    "max_De": float(df["De"].max()),
+                })
+
+        rank_df = pd.DataFrame(rows)
+        rank_df["score"] = self.calculate_design_score(
+            mean_ud_mm_s=rank_df["mean_Ud_mm_s"].to_numpy(),
+            outlet_ratio=rank_df["outlet_FL_over_FD"].to_numpy(),
+            min_ratio=rank_df["min_FL_over_FD"].to_numpy(),
+            max_de=rank_df["max_De"].to_numpy(),
+            u_vals=rank_df["U_m_s"].to_numpy(),
+            dh_um=rank_df["Dh_um"].to_numpy(),
+            width_um=rank_df["width_um"].to_numpy(),
+            model=model,
+        )
+        return rank_df.sort_values("score", ascending=False).reset_index(drop=True)
+
     def reynolds(self, u: np.ndarray | float) -> np.ndarray:
         u = np.asarray(u, dtype=float)
         return self.g.rho * u * self.g.dh_m / self.g.mu
@@ -665,6 +788,152 @@ def run_all(
 
     report_path = generate_markdown_report(sim, stem_all, "Comprehensive Dean Force Study", [section_p, section_s, section_v], u, r_mm)
     typer.echo(f"All simulations complete. Report saved to {report_path}")
+
+
+@app.command("design-heatmap")
+def design_heatmap(
+    dp_um: Annotated[float, typer.Option(help="Target HL60 diameter (μm)")] = 12.0,
+    height_um: Annotated[float, typer.Option(help="Fixed channel height (μm)")] = 150.0,
+    width_start_um: Annotated[float, typer.Option(help="Min channel width (μm)")] = 75.0,
+    width_end_um: Annotated[float, typer.Option(help="Max channel width (μm)")] = 250.0,
+    n_width: Annotated[int, typer.Option(help="Number of width samples")] = 100,
+    u_start: Annotated[float, typer.Option(help="Min velocity (m/s)")] = 0.10,
+    u_end: Annotated[float, typer.Option(help="Max velocity (m/s)")] = 1.50,
+    n_u: Annotated[int, typer.Option(help="Number of velocity samples")] = 100,
+    r_start_mm: Annotated[float, typer.Option(help="Spiral start radius (mm)")] = 2.0,
+    r_end_mm: Annotated[float, typer.Option(help="Spiral end radius (mm)")] = 15.0,
+    model: Annotated[DeanModel, typer.Option()] = DeanModel.REZAI2017,
+    alpha: Annotated[float, typer.Option(help="Used only for model=simple")] = 0.30,
+    cmap: Annotated[str, typer.Option(help="Colormap for heatmaps")] = "viridis",
+    top_n: Annotated[int, typer.Option(help="Rows to print from ranking")] = 15,
+) -> None:
+    if width_start_um <= 0 or width_end_um <= 0 or width_start_um >= width_end_um:
+        raise ValueError("Require 0 < width_start_um < width_end_um")
+    if u_start <= 0 or u_end <= 0 or u_start >= u_end:
+        raise ValueError("Require 0 < u_start < u_end")
+    if r_start_mm <= 0 or r_end_mm <= 0 or r_start_mm >= r_end_mm:
+        raise ValueError("Require 0 < r_start_mm < r_end_mm")
+    if dp_um <= 0:
+        raise ValueError("dp_um must be > 0")
+
+    sim = build_sim(width_um=width_start_um, height_um=height_um)
+    rank_df = sim.design_sweep(
+        dp_um=dp_um,
+        height_um=height_um,
+        width_start_um=width_start_um,
+        width_end_um=width_end_um,
+        n_width=n_width,
+        u_start=u_start,
+        u_end=u_end,
+        n_u=n_u,
+        r_start_mm=r_start_mm,
+        r_end_mm=r_end_mm,
+        model=model,
+        alpha=alpha,
+    )
+
+    rank_df = rank_df.sort_values("score", ascending=False).reset_index(drop=True)
+
+    # Save ranking table
+    outdir = Path("outputs")
+    outdir.mkdir(exist_ok=True)
+    stem = (
+        f"design_heatmap_{model.value}_dp{dp_um}_H{height_um}"
+        f"_W{width_start_um}-{width_end_um}_U{u_start}-{u_end}"
+        f"_R{r_start_mm}-{r_end_mm}"
+    )
+    csv_path = outdir / f"{stem}.csv"
+    rank_df.to_csv(csv_path, index=False)
+
+    # Pivot for heatmaps
+    score_grid = rank_df.pivot(index="U_m_s", columns="width_um", values="score").sort_index()
+    ud_grid = rank_df.pivot(index="U_m_s", columns="width_um", values="mean_Ud_mm_s").sort_index()
+    ratio_grid = rank_df.pivot(index="U_m_s", columns="width_um", values="outlet_FL_over_FD").sort_index()
+    de_grid = rank_df.pivot(index="U_m_s", columns="width_um", values="max_De").sort_index()
+
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
+    ax1, ax2, ax3, ax4 = axes.flat
+
+    im1 = ax1.imshow(
+        score_grid.values,
+        origin="lower",
+        aspect="auto",
+        extent=[score_grid.columns.min(), score_grid.columns.max(), score_grid.index.min(), score_grid.index.max()],
+        cmap=cmap,
+    )
+    ax1.set_title("Composite design score")
+    ax1.set_xlabel("Channel width (μm)")
+    ax1.set_ylabel("Velocity U (m/s)")
+    fig.colorbar(im1, ax=ax1, shrink=0.9)
+
+    im2 = ax2.imshow(
+        ud_grid.values,
+        origin="lower",
+        aspect="auto",
+        extent=[ud_grid.columns.min(), ud_grid.columns.max(), ud_grid.index.min(), ud_grid.index.max()],
+        cmap=cmap,
+    )
+    ax2.set_title("Mean Dean velocity (mm/s)")
+    ax2.set_xlabel("Channel width (μm)")
+    ax2.set_ylabel("Velocity U (m/s)")
+    fig.colorbar(im2, ax=ax2, shrink=0.9)
+
+    im3 = ax3.imshow(
+        ratio_grid.values,
+        origin="lower",
+        aspect="auto",
+        extent=[ratio_grid.columns.min(), ratio_grid.columns.max(), ratio_grid.index.min(), ratio_grid.index.max()],
+        cmap=cmap,
+    )
+    ax3.set_title("Outlet FL/FD")
+    ax3.set_xlabel("Channel width (μm)")
+    ax3.set_ylabel("Velocity U (m/s)")
+    fig.colorbar(im3, ax=ax3, shrink=0.9)
+
+    im4 = ax4.imshow(
+        de_grid.values,
+        origin="lower",
+        aspect="auto",
+        extent=[de_grid.columns.min(), de_grid.columns.max(), de_grid.index.min(), de_grid.index.max()],
+        cmap=cmap,
+    )
+    ax4.set_title("Max Dean number")
+    ax4.set_xlabel("Channel width (μm)")
+    ax4.set_ylabel("Velocity U (m/s)")
+    fig.colorbar(im4, ax=ax4, shrink=0.9)
+
+    fig.suptitle(
+        f"HL60 design heatmap | dp={dp_um:.1f} μm, h={height_um:.1f} μm, "
+        f"R={r_start_mm:.1f}-{r_end_mm:.1f} mm, model={model.value}",
+        y=1.02,
+    )
+
+    png_path = outdir / f"{stem}.png"
+    fig.savefig(png_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    typer.echo(f"Saved heatmap: {png_path}")
+    typer.echo(f"Saved ranking CSV: {csv_path}")
+    typer.echo("")
+    typer.echo("Top-ranked designs:")
+    typer.echo(
+        rank_df[
+            [
+                "score",
+                "width_um",
+                "Dh_um",
+                "U_m_s",
+                "mean_Ud_mm_s",
+                "outlet_FL_over_FD",
+                "min_FL_over_FD",
+                "max_De",
+            ]
+        ]
+        .head(top_n)
+        .round(3)
+        .to_string(index=False)
+    )
 
 
 @app.command()

@@ -1,6 +1,6 @@
 [project]
 name = "dean-forces"
-version = "0.2.0"
+version = "0.3.0"
 description = "Command-line tool for simulating and visualizing Inertial Lift vs Dean Drag in spiral microfluidic channels"
 readme = "README.md"
 requires-python = ">=3.12"
