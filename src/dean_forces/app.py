@@ -8,7 +8,9 @@ from typing import Annotated
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import sys
 import typer
+from streamlit.web import cli as stcli
 
 app = typer.Typer(help="Simulate Dean-force trends in curved/spiral microchannels.", no_args_is_help=True)
 
@@ -145,12 +147,13 @@ class DeanForcesSimulator:
         y0, y1 = np.log10(ratio[i]), np.log10(ratio[i + 1])
         return x0 + (0.0 - y0) * (x1 - x0) / (y1 - y0)
 
-    def _warn_if_outside_rezai_range(self, de: np.ndarray, model: DeanModel) -> None:
+    def _warn_if_outside_rezai_range(self, de: np.ndarray, model: DeanModel, quiet: bool = False) -> str | None:
         if model == DeanModel.REZAI2017 and np.nanmax(de) > 30:
-            typer.secho(
-                f"Warning: max De = {np.nanmax(de):.1f}; Rezai2017 was reported for De < 30.",
-                fg=typer.colors.YELLOW,
-            )
+            msg = f"Warning: max De = {np.nanmax(de):.1f}; Rezai2017 was reported for De < 30."
+            if not quiet:
+                typer.secho(msg, fg=typer.colors.YELLOW)
+            return msg
+        return None
 
     def _save_df(self, df: pd.DataFrame, stem: str) -> Path:
         csv_path = self.outdir / f"{stem}.csv"
@@ -171,6 +174,7 @@ class DeanForcesSimulator:
         dp_end_um: float,
         model: DeanModel,
         alpha: float,
+        quiet: bool = False,
     ) -> pd.DataFrame:
         if u <= 0 or r_mm <= 0:
             raise ValueError("u and r_mm must be > 0")
@@ -193,7 +197,7 @@ class DeanForcesSimulator:
                 **out,
             }
         )
-        self._warn_if_outside_rezai_range(df["De"].to_numpy(), model)
+        self._warn_if_outside_rezai_range(df["De"].to_numpy(), model, quiet=quiet)
         return df
 
     def velocity_sweep(
@@ -204,6 +208,7 @@ class DeanForcesSimulator:
         u_end: float,
         model: DeanModel,
         alpha: float,
+        quiet: bool = False,
     ) -> pd.DataFrame:
         if dp_um <= 0 or r_mm <= 0 or u_start <= 0 or u_end <= 0 or u_start >= u_end:
             raise ValueError("Require positive inputs and u_start < u_end")
@@ -218,7 +223,7 @@ class DeanForcesSimulator:
         )
 
         df = pd.DataFrame({"U_m_s": u, **out})
-        self._warn_if_outside_rezai_range(df["De"].to_numpy(), model)
+        self._warn_if_outside_rezai_range(df["De"].to_numpy(), model, quiet=quiet)
         return df
 
     def spiral_sweep(
@@ -229,6 +234,7 @@ class DeanForcesSimulator:
         r_end_mm: float,
         model: DeanModel,
         alpha: float,
+        quiet: bool = False,
     ) -> pd.DataFrame:
         if u <= 0 or dp_um <= 0 or r_start_mm <= 0 or r_end_mm <= 0 or r_start_mm >= r_end_mm:
             raise ValueError("Require positive inputs and r_start_mm < r_end_mm")
@@ -243,7 +249,7 @@ class DeanForcesSimulator:
         )
 
         df = pd.DataFrame({"R_mm": r_mm, **out})
-        self._warn_if_outside_rezai_range(df["De"].to_numpy(), model)
+        self._warn_if_outside_rezai_range(df["De"].to_numpy(), model, quiet=quiet)
         return df
 
     def alpha_sweep(
@@ -659,6 +665,18 @@ def run_all(
 
     report_path = generate_markdown_report(sim, stem_all, "Comprehensive Dean Force Study", [section_p, section_s, section_v], u, r_mm)
     typer.echo(f"All simulations complete. Report saved to {report_path}")
+
+
+@app.command()
+def gui():
+    """Launch the interactive Streamlit dashboard."""
+    gui_script = Path(__file__).parent / "gui.py"
+    if not gui_script.exists():
+        typer.echo(f"Error: GUI script not found at {gui_script}")
+        raise typer.Exit(code=1)
+    
+    sys.argv = ["streamlit", "run", str(gui_script)]
+    sys.exit(stcli.main())
 
 
 if __name__ == "__main__":

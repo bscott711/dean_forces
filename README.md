@@ -32,6 +32,9 @@ The tool is available via the `dean-force` entry point. Use `--help` to see all 
 # Run a comprehensive study (Particle, Velocity, and Spiral sweeps)
 uv run dean-force all
 
+# Launch the interactive Streamlit dashboard
+uv run dean-force gui
+
 # Run a specific particle size sweep
 uv run dean-force particle --u 1.2 --r-mm 5.0 --dp-start 5 --dp-end 25
 
