@@ -50,7 +50,10 @@ def run_gui():
             dp_h = st.number_input("Target cell diameter (μm)", 1.0, 50.0, 12.0, key="dp_h")
             w_range = st.slider("Width range (μm)", 50.0, 500.0, (75.0, 250.0))
             v_range = st.slider("Velocity range (m/s)", 0.01, 5.0, (0.1, 1.5))
-            r_range_h = st.slider("Spiral radius range (mm)", 1.0, 30.0, (2.0, 15.0))
+            r_range_h = st.slider(
+                "Spiral radius range (mm)", 1.0, 30.0, (2.0, 11.5), 
+                help="Constraint: R_start >= 2.0mm (Inlets) and 2*R_end <= 24mm (Slide Limit)"
+            )
             res = st.select_slider("Grid resolution", options=[10, 25, 50, 75, 100], value=100)
             run_sweep = st.button("Run Design Sweep", type="primary")
 
@@ -167,7 +170,7 @@ def run_gui():
         col1, col2 = st.columns([1, 2])
         with col1:
             u_p = st.number_input("Mean Velocity (m/s)", 0.1, 5.0, 1.04, key="u_p_p")
-            r_p = st.number_input("Radius (mm)", 1.0, 50.0, 4.3, key="r_p_p")
+            r_p = st.number_input("Radius (mm)", 1.0, 50.0, 5.0, key="r_p_p")
             dp_range = st.slider("Size range (μm)", 1.0, 40.0, (1.0, 25.0))
         
         with col2:
@@ -194,7 +197,7 @@ def run_gui():
         col1, col2 = st.columns([1, 2])
         with col1:
             dp_v = st.number_input("Particle Diameter (μm)", 1.0, 50.0, 12.0, key="dp_v_v")
-            r_v = st.number_input("Radius (mm) ", 1.0, 50.0, 4.3, key="r_v_v")
+            r_v = st.number_input("Radius (mm) ", 1.0, 50.0, 5.0, key="r_v_v")
             u_range = st.slider("Velocity range (m/s) ", 0.01, 3.0, (0.1, 1.5))
         
         with col2:
@@ -218,7 +221,7 @@ def run_gui():
         with col1:
             u_s = st.number_input("Velocity (m/s)  ", 0.1, 5.0, 1.04, key="u_s_s")
             dp_s = st.number_input("Particle Diameter (μm) ", 1.0, 50.0, 12.0, key="dp_s_s")
-            r_range_s = st.slider("Radius range (mm)", 1.0, 50.0, (4.3, 15.0))
+            r_range_s = st.slider("Radius range (mm)", 1.0, 50.0, (2.0, 11.5))
         
         with col2:
             df_s = sim.spiral_sweep(u_s, dp_s, r_range_s[0], r_range_s[1], model, alpha)
@@ -271,7 +274,7 @@ def run_gui():
         - $T_{norm}$ (Transport): Min-max normalized **Mean Dean Velocity** along the path.
         - $O_{norm}$ (Outlet): Normalized focusing strength at the **final exit**.
         - $R_{norm}$ (Robustness): Normalized focusing strength at the **weakest point** along the path.
-        - $P_{Geom}$ (Geometric): Penalty if the device exceeds the **24mm slide limit** or the **2mm inlet limit**.
+        - $P_{Geom}$ (Geometric): **Soft ramping penalty** if the device exceeds the **24mm slide limit** or the **2mm inlet limit**. This ensures the optimizer still shows trends even if constraints are slightly exceeded.
         """)
 
 if __name__ == "__main__":

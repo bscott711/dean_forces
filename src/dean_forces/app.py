@@ -128,11 +128,11 @@ class DeanForcesSimulator:
         # 1. Slide limit: 25mm slide, outer diameter (2*R_end) < 24mm (1mm buffer)
         P_geom = 1.0
         if (2.0 * r_end_mm) > 24.0:
-            P_geom *= 0.1 # Strong penalty for oversized chip
+            P_geom *= np.exp(-0.5 * (2.0 * r_end_mm - 24.0)) # Soft decaying penalty
         
         # 2. Inlet limit: 2x 1.5mm inlets + buffer implies R_start > 2.0mm
         if r_start_mm < 2.0:
-            P_geom *= 0.1 # Strong penalty for insufficient inlet space
+            P_geom *= np.exp(-5.0 * (2.0 - r_start_mm)) # Soft decaying penalty
 
         # Composite score
         return (
