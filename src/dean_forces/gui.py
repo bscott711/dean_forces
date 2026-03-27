@@ -33,7 +33,7 @@ def run_gui():
     if model == DeanModel.SIMPLE:
         alpha = st.sidebar.slider("Simple alpha (calibration)", 0.05, 1.0, 0.30, step=0.05)
     
-    selected_cmap = st.sidebar.selectbox("Colormap Theme", ["viridis", "plasma", "magma", "inferno", "cividis", "turbo"], index=0)
+    selected_cmap = st.sidebar.selectbox("Colormap Theme", ["viridis", "Blues", "Ice", "plasma", "magma", "inferno", "cividis", "turbo"], index=0)
 
     # Main Tabs - REORDERED: Design Heatmap first
     tab_h, tab_p, tab_v, tab_s = st.tabs(["Design Heatmap", "Particle Size Sweep", "Velocity Sweep", "Spiral Decay"])
@@ -51,9 +51,10 @@ def run_gui():
             w_range = st.slider("Width range (μm)", 50.0, 500.0, (75.0, 250.0))
             v_range = st.slider("Velocity range (m/s)", 0.01, 5.0, (0.1, 1.5))
             r_range_h = st.slider(
-                "Spiral radius range (mm)", 1.0, 30.0, (2.0, 11.5), 
+                "Spiral radius range (mm)", 1.0, 50.0, (2.0, 11.5), 
                 help="Constraint: R_start >= 2.0mm (Inlets) and 2*R_end <= 24mm (Slide Limit)"
             )
+            enforce_slide = st.checkbox("Enforce Glass Slide Limit (24mm)", value=True, help="Applies a soft penalty if the device exceeds 24mm diameter.")
             res = st.select_slider("Grid resolution", options=[10, 25, 50, 75, 100], value=100)
             run_sweep = st.button("Run Design Sweep", type="primary")
 
@@ -72,6 +73,7 @@ def run_gui():
                     r_end_mm=r_range_h[1],
                     model=model,
                     alpha=alpha,
+                    enforce_slide_limit=enforce_slide,
                 )
                 st.session_state["design_sweep_results"] = rdf
         
@@ -94,41 +96,54 @@ def run_gui():
                         y=cb_y,
                         len=cb_len
                     ),
-                    hovertemplate="Width: %{x}μm<br>U: %{y}m/s<br>Value: %{z:.3f}<extra></extra>"
+                    hovertemplate="Width: %{x}μm<br>U: %{y}m/s<br>Value: %{z:.4g}<extra></extra>"
                 )
 
-            view_mode = st.selectbox("Zoom into specific metric:", ["All (2x2 Grid)", "Composite Score", "Mean Ud", "Outlet Ratio", "Max De"], key="view_mode")
+            view_mode = st.selectbox("Zoom into specific metric:", ["All (3x2 Grid)", "Composite Score", "Residence Time", "Mean Ud", "Outlet Ratio", "Max De"], key="view_mode")
             
-            if view_mode == "All (2x2 Grid)":
-                fig_h = make_subplots(rows=2, cols=2, subplot_titles=[
-                    "Composite Design Score", "Mean Dean Velocity (mm/s)", 
-                    "Outlet FL/FD", "Max Dean Number"
-                ], horizontal_spacing=0.15, vertical_spacing=0.15)
+            if view_mode == "All (3x2 Grid)":
+                fig_h = make_subplots(rows=3, cols=2, subplot_titles=[
+                    "Composite Design Score", "Residence Time (s)", 
+                    "Mean Dean Velocity (mm/s)", "Outlet FL/FD", 
+                    "Max Dean Number", ""
+                ], horizontal_spacing=0.20, vertical_spacing=0.12)
                 
-                fig_h.add_trace(make_hm(rdf, "score", "Score", 1, 1, cb_x=1.02, cb_y=0.8, cb_len=0.4), row=1, col=1)
-                fig_h.add_trace(make_hm(rdf, "mean_Ud_mm_s", "Ud", 1, 2, cb_x=1.12, cb_y=0.8, cb_len=0.4), row=1, col=2)
-                fig_h.add_trace(make_hm(rdf, "outlet_FL_over_FD", "Ratio", 2, 1, cb_x=1.02, cb_y=0.28, cb_len=0.4), row=2, col=1)
-                fig_h.add_trace(make_hm(rdf, "max_De", "De", 2, 2, cb_x=1.12, cb_y=0.28, cb_len=0.4), row=2, col=2)
+                # Column 1 / Row 1 & 2
+                fig_h.add_trace(make_hm(rdf, "score", "Score", 1, 1, cb_x=0.42, cb_y=0.86, cb_len=0.25), row=1, col=1)
+                fig_h.add_trace(make_hm(rdf, "res_time_s", "Time (s)", 1, 2, cb_x=1.00, cb_y=0.86, cb_len=0.25), row=1, col=2)
                 
-                fig_h.update_xaxes(matches='x')
-                fig_h.update_yaxes(matches='y')
-                fig_h.update_layout(height=800, margin=dict(t=50, b=50, l=50, r=150))
+                fig_h.add_trace(make_hm(rdf, "mean_Ud_mm_s", "Ud", 2, 1, cb_x=0.42, cb_y=0.50, cb_len=0.25), row=2, col=1)
+                fig_h.add_trace(make_hm(rdf, "outlet_FL_over_FD", "Ratio", 2, 2, cb_x=1.00, cb_y=0.50, cb_len=0.25), row=2, col=2)
+                
+                fig_h.add_trace(make_hm(rdf, "max_De", "De", 3, 1, cb_x=0.42, cb_y=0.14, cb_len=0.25), row=3, col=1)
+                
+                fig_h.update_xaxes(title_text="Width (μm)")
+                fig_h.update_yaxes(title_text="Velocity (m/s)")
+                fig_h.update_layout(height=1100, margin=dict(t=80, b=50, l=80, r=100))
             else:
                 metric_map = {
                     "Composite Score": ("score", "Score"),
+                    "Residence Time": ("res_time_s", "Time (s)"),
                     "Mean Ud": ("mean_Ud_mm_s", "Ud (mm/s)"),
                     "Outlet Ratio": ("outlet_FL_over_FD", "Outlet FL/FD"),
                     "Max De": ("max_De", "Max Dean Number")
                 }
                 z_key, z_title = metric_map[view_mode]
                 fig_h = go.Figure(data=[make_hm(rdf, z_key, z_title, 1, 1, cb_x=1.05, cb_y=0.5, cb_len=0.9)])
-                fig_h.update_layout(height=600, title=f"Enlarged View: {view_mode}", margin=dict(r=150))
+                fig_h.update_layout(
+                    height=600, 
+                    title=f"Enlarged View: {view_mode}", 
+                    xaxis_title="Width (μm)",
+                    yaxis_title="Velocity (m/s)",
+                    margin=dict(r=150)
+                )
 
             # Table Interaction
             st.subheader("Top Ranked Configurations")
             st.info("💡 **Tip**: Click a row in the table below to highlight that design in the heatmaps above.")
             
-            display_df = rdf.sort_values("score", ascending=False).head(50).reset_index(drop=True)
+            cols_to_show = ["score", "width_um", "U_m_s", "res_time_s", "outlet_FL_over_FD", "min_FL_over_FD", "mean_Ud_mm_s", "max_De"]
+            display_df = rdf.sort_values("score", ascending=False).head(50).reset_index(drop=True)[cols_to_show]
             selection = st.dataframe(
                 display_df.round(3),
                 width="stretch",
@@ -142,15 +157,14 @@ def run_gui():
                 sel_row = display_df.iloc[sel_idx]
                 sx, sy = sel_row["width_um"], sel_row["U_m_s"]
                 
-                if view_mode == "All (2x2 Grid)":
-                    for r in [1, 2]:
-                        for c in [1, 2]:
-                            fig_h.add_trace(go.Scatter(
-                                x=[sx], y=[sy], mode='markers',
-                                marker=dict(symbol='star', size=16, color='white', 
-                                          line=dict(color='black', width=1.5)),
-                                name="Selected Configuration", showlegend=False
-                            ), row=r, col=c)
+                if "All" in view_mode:
+                    for r, c in [(1,1), (1,2), (2,1), (2,2), (3,1)]:
+                        fig_h.add_trace(go.Scatter(
+                            x=[sx], y=[sy], mode='markers',
+                            marker=dict(symbol='star', size=16, color='white', 
+                                      line=dict(color='black', width=1.5)),
+                            name="Selected Configuration", showlegend=False
+                        ), row=r, col=c)
                 else:
                     fig_h.add_trace(go.Scatter(
                         x=[sx], y=[sy], mode='markers',
@@ -269,11 +283,15 @@ def run_gui():
         4. **Validity Penalty ($P_{De}$)**: Rezai model limit ($De > 30$).
 
         ### 3. Composite Design Score
-        $$Score = (0.4 \cdot T_{norm} + 0.4 \cdot O_{norm} + 0.2 \cdot R_{norm}) \times P_{Fab} \times P_{Re} \times P_{Shear} \times P_{De} \times P_{Geom}$$
+        $$Score = (0.4 \cdot T_{norm} + 0.4 \cdot O_{norm} + 0.2 \cdot R_{norm}) \times P_{Fab} \times P_{Re} \times P_{Shear} \times P_{De} \times P_{Geom} \times P_{Time}$$
         Where:
         - $T_{norm}$ (Transport): Min-max normalized **Mean Dean Velocity** along the path.
         - $O_{norm}$ (Outlet): Normalized focusing strength at the **final exit**.
         - $R_{norm}$ (Robustness): Normalized focusing strength at the **weakest point** along the path.
+        - $P_{Time}$ (Residence Time): Principled penalty based on diffusion/throughput.
+          - If $t \le 5.0$, $P_{Time} = 1.0$.
+          - If $t > 5.0$, $P_{Time} = \exp(-0.2 \cdot (t - 5.0))$.
+          - This ensures a gentle penalty (~30% score drop) at $t = 10s$, favoring shorter devices while maintaining visibility of high-performing long devices.
         - $P_{Geom}$ (Geometric): **Soft ramping penalty** if the device exceeds the **24mm slide limit** or the **2mm inlet limit**. This ensures the optimizer still shows trends even if constraints are slightly exceeded.
         """)
 

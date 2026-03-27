@@ -88,6 +88,7 @@ class DeanForcesSimulator:
         r_start_mm: float,
         r_end_mm: float,
         model: DeanModel,
+        enforce_slide_limit: bool = True,
     ) -> np.ndarray:
         """Centralized scoring logic shared between CLI and GUI."""
         # Normalize metrics for ranking
@@ -124,22 +125,39 @@ class DeanForcesSimulator:
         if model == DeanModel.REZAI2017:
             validity_penalty = np.minimum(1.0, 30.0 / max_de)
 
-        # Geometric Constraints (User Request)
+        # Geometric Constraints (User Request: Optional Slide Limit)
         # 1. Slide limit: 25mm slide, outer diameter (2*R_end) < 24mm (1mm buffer)
         P_geom = 1.0
-        if (2.0 * r_end_mm) > 24.0:
-            P_geom *= np.exp(-0.5 * (2.0 * r_end_mm - 24.0)) # Soft decaying penalty
-        
-        # 2. Inlet limit: 2x 1.5mm inlets + buffer implies R_start > 2.0mm
-        if r_start_mm < 2.0:
-            P_geom *= np.exp(-5.0 * (2.0 - r_start_mm)) # Soft decaying penalty
+        if enforce_slide_limit:
+            if (2.0 * r_end_mm) > 24.0:
+                # Soft decaying penalty if exceeded (User request: keep it gentle)
+                P_geom *= np.exp(-0.25 * (2.0 * r_end_mm - 24.0)) 
+            
+            # 2. Inlet limit: 2x 1.5mm inlets + buffer implies R_start > 2.0mm
+            if r_start_mm < 2.0:
+                P_geom *= np.exp(-5.0 * (2.0 - r_start_mm)) 
 
-        # Composite score
+        # Residence Time Penalty (Principled Decay)
+        # t0: Comfortable threshold where we are still happy (s)
+        # beta: How fast the penalty decays after t0
+        t0 = 5.0    
+        beta = 0.2  
+        
+        w_mm = width_um * 1e-3
+        pitch_mm = 2.0 * w_mm 
+        est_length_mm = np.pi * (r_end_mm**2 - r_start_mm**2) / pitch_mm
+        res_time_s = (est_length_mm * 1e-3) / np.maximum(u_vals, 0.01)
+        
+        P_time = np.ones_like(res_time_s)
+        mask = res_time_s > t0
+        P_time[mask] = np.exp(-beta * (res_time_s[mask] - t0))
+
+        # Composite score: product of normalized components and penalty factors
         return (
             0.40 * transport_norm
             + 0.40 * outlet_focus_norm
             + 0.20 * robustness_norm
-        ) * validity_penalty * laminar_penalty * shear_penalty * P_fab * P_geom
+        ) * validity_penalty * laminar_penalty * shear_penalty * P_fab * P_geom * P_time
 
     def design_sweep(
         self,
@@ -155,6 +173,7 @@ class DeanForcesSimulator:
         r_end_mm: float,
         model: DeanModel,
         alpha: float,
+        enforce_slide_limit: bool = True,
     ) -> pd.DataFrame:
         """Core sweep logic for design optimization (Single Source of Truth)."""
         widths = np.linspace(width_start_um, width_end_um, n_width)
@@ -175,6 +194,12 @@ class DeanForcesSimulator:
                     quiet=True,
                 )
 
+                # Estimate residence time for the report
+                w_mm = w * 1e-3
+                pitch_mm = 2.0 * w_mm
+                est_L_mm = np.pi * (r_end_mm**2 - r_start_mm**2) / pitch_mm
+                t_res = (est_L_mm * 1e-3) / max(u, 0.01)
+
                 rows.append({
                     "width_um": w,
                     "height_um": height_um,
@@ -187,6 +212,7 @@ class DeanForcesSimulator:
                     "outlet_FL_over_FD": float(df["FL_over_FD"].iloc[-1]),
                     "min_FL_over_FD": float(df["FL_over_FD"].min()),
                     "max_De": float(df["De"].max()),
+                    "res_time_s": t_res,
                 })
 
         rank_df = pd.DataFrame(rows)
@@ -201,7 +227,12 @@ class DeanForcesSimulator:
             r_start_mm=r_start_mm,
             r_end_mm=r_end_mm,
             model=model,
+            enforce_slide_limit=enforce_slide_limit,
         )
+        
+        # Normalize final scores to [0, 1] range for the current design space
+        rank_df["score"] = self._minmax(rank_df["score"].to_numpy())
+        
         return rank_df.sort_values("score", ascending=False).reset_index(drop=True)
 
     def reynolds(self, u: np.ndarray | float) -> np.ndarray:

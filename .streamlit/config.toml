@@ -1,0 +1,14 @@
+[server]
+port = 8501
+address = "0.0.0.0"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+# Vibrant Deep Blue Theme
+primaryColor = "#00BFFF"
+backgroundColor = "#081b2d"
+secondaryBackgroundColor = "#112b48"
+textColor = "#e6f1ff"
+font = "sans serif"
