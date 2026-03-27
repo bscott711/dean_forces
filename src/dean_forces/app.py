@@ -118,7 +118,8 @@ class DeanForcesSimulator:
         laminar_penalty = np.where(re_vals > 1000, np.maximum(0.05, 1.0 - (re_vals - 1000) / 1000), 1.0)
 
         # Shear/Pressure penalty (Cells and delamination)
-        shear_penalty = np.where(u_vals > 1.5, np.maximum(0.5, 1.0 - 0.5 * (u_vals - 1.5) / 1.5), 1.0)
+        # Sharpened: Starts at 1.5 m/s, drops to zero at 3.0 m/s
+        shear_penalty = np.where(u_vals > 1.5, np.maximum(0.0, 1.0 - (u_vals - 1.5) / 1.5)**2, 1.0)
 
         # Model validity penalty
         validity_penalty = np.ones_like(max_de)
@@ -137,27 +138,40 @@ class DeanForcesSimulator:
             if r_start_mm < 2.0:
                 P_geom *= np.exp(-5.0 * (2.0 - r_start_mm)) 
 
-        # Residence Time Penalty (Principled Decay)
-        # t0: Comfortable threshold where we are still happy (s)
-        # beta: How fast the penalty decays after t0
-        t0 = 5.0    
-        beta = 0.2  
+        # Process Time Penalty (User Request: 5 mL Batch Throughput)
+        # Instead of in-chip residence, we penalize the total time to wash 5 mL.
+        v_batch_m3 = 5.0e-6 # 5 mL
+        q_m3_s = u_vals * (width_um * 1e-6) * (self.g.height_m)
+        t_proc_min = (v_batch_m3 / np.maximum(q_m3_s, 1e-12)) / 60.0
         
+        t0_min = 8.0   # Comfortable wash time (minutes)
+        beta_min = 0.15 # Decay rate
+        
+        P_time = np.ones_like(t_proc_min)
+        mask = t_proc_min > t0_min
+        P_time[mask] = np.exp(-beta_min * (t_proc_min[mask] - t0_min))
+
+        # Pressure Penalty (P_delta_P)
+        
+        # Pressure Penalty (P_delta_P)
+        # delta_P ~ 12 * mu * L * U / Dh^2
         w_mm = width_um * 1e-3
         pitch_mm = 2.0 * w_mm 
         est_length_mm = np.pi * (r_end_mm**2 - r_start_mm**2) / pitch_mm
-        res_time_s = (est_length_mm * 1e-3) / np.maximum(u_vals, 0.01)
-        
-        P_time = np.ones_like(res_time_s)
-        mask = res_time_s > t0
-        P_time[mask] = np.exp(-beta * (res_time_s[mask] - t0))
+
+        # Target: < 35 psi (approx 240 kPa). Failure at 60 psi (410 kPa).
+        delta_p_pa = (12.0 * self.g.mu * (est_length_mm * 1e-3) * u_vals) / (dh_um * 1e-6)**2
+        delta_p_psi = delta_p_pa / 6894.76
+        P_pressure = np.where(delta_p_psi > 35.0, np.exp(-0.2 * (delta_p_psi - 35.0)), 1.0)
+        # Extreme pressure kill-switch
+        P_pressure[delta_p_psi > 60.0] *= 0.1
 
         # Composite score: product of normalized components and penalty factors
         return (
             0.40 * transport_norm
             + 0.40 * outlet_focus_norm
             + 0.20 * robustness_norm
-        ) * validity_penalty * laminar_penalty * shear_penalty * P_fab * P_geom * P_time
+        ) * validity_penalty * laminar_penalty * shear_penalty * P_fab * P_geom * P_time * P_pressure
 
     def design_sweep(
         self,
@@ -194,10 +208,15 @@ class DeanForcesSimulator:
                     quiet=True,
                 )
 
-                # Estimate residence time for the report
+                # Pressure estimate
+                # delta_p ~ 12 * mu * L * U / Dh^2
                 w_mm = w * 1e-3
                 pitch_mm = 2.0 * w_mm
                 est_L_mm = np.pi * (r_end_mm**2 - r_start_mm**2) / pitch_mm
+                
+                dh_m = sweep_sim.g.dh_m
+                dp_pa = (12.0 * self.g.mu * (est_L_mm * 1e-3) * u) / dh_m**2
+                dp_psi = dp_pa / 6894.76
                 t_res = (est_L_mm * 1e-3) / max(u, 0.01)
 
                 rows.append({
@@ -213,6 +232,8 @@ class DeanForcesSimulator:
                     "min_FL_over_FD": float(df["FL_over_FD"].min()),
                     "max_De": float(df["De"].max()),
                     "res_time_s": t_res,
+                    "t_proc_min": ( (5.0e-6 / (u * w * 1e-6 * self.g.height_m)) / 60.0 ) if u > 0 else 999.0,
+                    "delta_p_psi": dp_psi,
                 })
 
         rank_df = pd.DataFrame(rows)

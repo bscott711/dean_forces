@@ -99,23 +99,24 @@ def run_gui():
                     hovertemplate="Width: %{x}μm<br>U: %{y}m/s<br>Value: %{z:.4g}<extra></extra>"
                 )
 
-            view_mode = st.selectbox("Zoom into specific metric:", ["All (3x2 Grid)", "Composite Score", "Residence Time", "Mean Ud", "Outlet Ratio", "Max De"], key="view_mode")
+            view_mode = st.selectbox("Zoom into specific metric:", ["All (3x2 Grid)", "Composite Score", "Wash Time (5mL)", "Mean Ud", "Outlet Ratio", "Max De", "Backpressure"], key="view_mode")
             
             if view_mode == "All (3x2 Grid)":
                 fig_h = make_subplots(rows=3, cols=2, subplot_titles=[
-                    "Composite Design Score", "Residence Time (s)", 
+                    "Composite Design Score", "5 mL Wash Time (min)", 
                     "Mean Dean Velocity (mm/s)", "Outlet FL/FD", 
-                    "Max Dean Number", ""
+                    "Max Dean Number", "Backpressure (psi)"
                 ], horizontal_spacing=0.20, vertical_spacing=0.12)
                 
-                # Column 1 / Row 1 & 2
+                # Column 1 / Row 1, 2, 3
                 fig_h.add_trace(make_hm(rdf, "score", "Score", 1, 1, cb_x=0.42, cb_y=0.86, cb_len=0.25), row=1, col=1)
-                fig_h.add_trace(make_hm(rdf, "res_time_s", "Time (s)", 1, 2, cb_x=1.00, cb_y=0.86, cb_len=0.25), row=1, col=2)
+                fig_h.add_trace(make_hm(rdf, "t_proc_min", "min", 1, 2, cb_x=1.00, cb_y=0.86, cb_len=0.25), row=1, col=2)
                 
                 fig_h.add_trace(make_hm(rdf, "mean_Ud_mm_s", "Ud", 2, 1, cb_x=0.42, cb_y=0.50, cb_len=0.25), row=2, col=1)
                 fig_h.add_trace(make_hm(rdf, "outlet_FL_over_FD", "Ratio", 2, 2, cb_x=1.00, cb_y=0.50, cb_len=0.25), row=2, col=2)
                 
                 fig_h.add_trace(make_hm(rdf, "max_De", "De", 3, 1, cb_x=0.42, cb_y=0.14, cb_len=0.25), row=3, col=1)
+                fig_h.add_trace(make_hm(rdf, "delta_p_psi", "psi", 3, 2, cb_x=1.00, cb_y=0.14, cb_len=0.25), row=3, col=2)
                 
                 fig_h.update_xaxes(title_text="Width (μm)")
                 fig_h.update_yaxes(title_text="Velocity (m/s)")
@@ -123,7 +124,8 @@ def run_gui():
             else:
                 metric_map = {
                     "Composite Score": ("score", "Score"),
-                    "Residence Time": ("res_time_s", "Time (s)"),
+                    "Wash Time (5mL)": ("t_proc_min", "Time (min)"),
+                    "Backpressure": ("delta_p_psi", "Pressure (psi)"),
                     "Mean Ud": ("mean_Ud_mm_s", "Ud (mm/s)"),
                     "Outlet Ratio": ("outlet_FL_over_FD", "Outlet FL/FD"),
                     "Max De": ("max_De", "Max Dean Number")
@@ -142,7 +144,7 @@ def run_gui():
             st.subheader("Top Ranked Configurations")
             st.info("💡 **Tip**: Click a row in the table below to highlight that design in the heatmaps above.")
             
-            cols_to_show = ["score", "width_um", "U_m_s", "res_time_s", "outlet_FL_over_FD", "min_FL_over_FD", "mean_Ud_mm_s", "max_De"]
+            cols_to_show = ["score", "width_um", "U_m_s", "delta_p_psi", "t_proc_min", "res_time_s", "outlet_FL_over_FD", "mean_Ud_mm_s", "max_De"]
             display_df = rdf.sort_values("score", ascending=False).head(50).reset_index(drop=True)[cols_to_show]
             selection = st.dataframe(
                 display_df.round(3),
@@ -158,7 +160,7 @@ def run_gui():
                 sx, sy = sel_row["width_um"], sel_row["U_m_s"]
                 
                 if "All" in view_mode:
-                    for r, c in [(1,1), (1,2), (2,1), (2,2), (3,1)]:
+                    for r, c in [(1,1), (1,2), (2,1), (2,2), (3,1), (3,2)]:
                         fig_h.add_trace(go.Scatter(
                             x=[sx], y=[sy], mode='markers',
                             marker=dict(symbol='star', size=16, color='white', 
@@ -274,25 +276,23 @@ def run_gui():
             - **Min Ratio**: Weakest focusing strength along path. (Capped at 5.0 for scoring).
 
         ### 2. Penalty Factors (Real-World Constraints)
-        1. **Fabrication/Clogging ($P_{Fab}$)**: 
+        1. **Fabrication ($P_{Fab}$)**: Limits for 3D/PDMS printing. 
            - $w < 60 \mu m$: $P_{Fab} = 0.0$
            - $60 \le w < 100 \mu m$: $P_{Fab} = 0.2 + 0.8 \cdot \frac{w - 60}{40}$
-           - $w \ge 100 \mu m$: $P_{Fab} = 1.0$
-        2. **Laminar Penalty ($P_{Re}$)**: $Re > 1000$ (Turbulence/Mixing).
-        3. **Shear Penalty ($P_{U}$)**: $U > 1.5$ m/s (Cell damage/Delamination).
-        4. **Validity Penalty ($P_{De}$)**: Rezai model limit ($De > 30$).
+        2. **Throughput ($P_{Time}$)**: Targets **5 mL wash time $\le$ 8 min**.
+           - If $t > 8$ min, $P_{Time} = \exp(-0.15 \cdot (t - 8.0))$.
+        3. **Backpressure ($P_{Pressure}$)**: Estimated via Hagen-Poiseuille.
+           - Delamination penalty starts at **35 psi**.
+        4. **Shear Damage ($P_{Shear}$)**: Quadratic drop after **1.5 m/s**, zero at **3.0 m/s**.
+        5. **Laminar ($P_{Re}$)**: $Re > 1000$ (Turbulence/Mixing penalty).
+        6. **Validity ($P_{De}$)**: Rezai model limit ($De \le 30$).
+        7. **Geometric ($P_{Geom}$)**: Slide/Inlet fitting constraints (optional).
 
         ### 3. Composite Design Score
-        $$Score = (0.4 \cdot T_{norm} + 0.4 \cdot O_{norm} + 0.2 \cdot R_{norm}) \times P_{Fab} \times P_{Re} \times P_{Shear} \times P_{De} \times P_{Geom} \times P_{Time}$$
-        Where:
-        - $T_{norm}$ (Transport): Min-max normalized **Mean Dean Velocity** along the path.
-        - $O_{norm}$ (Outlet): Normalized focusing strength at the **final exit**.
-        - $R_{norm}$ (Robustness): Normalized focusing strength at the **weakest point** along the path.
-        - $P_{Time}$ (Residence Time): Principled penalty based on diffusion/throughput.
-          - If $t \le 5.0$, $P_{Time} = 1.0$.
-          - If $t > 5.0$, $P_{Time} = \exp(-0.2 \cdot (t - 5.0))$.
-          - This ensures a gentle penalty (~30% score drop) at $t = 10s$, favoring shorter devices while maintaining visibility of high-performing long devices.
-        - $P_{Geom}$ (Geometric): **Soft ramping penalty** if the device exceeds the **24mm slide limit** or the **2mm inlet limit**. This ensures the optimizer still shows trends even if constraints are slightly exceeded.
+        The diagnostic heatmaps show the **Normalized Composite Score** ($[0,1]$):
+        $$Score_{raw} = (0.4 \cdot T_{norm} + 0.4 \cdot O_{norm} + 0.2 \cdot R_{norm}) \times \prod P_{i}$$
+        
+        Where $T$ (Transport), $O$ (Outlet), and $R$ (Robustness) are normalized dimensionless metrics, and $\prod P_i$ is the product of all real-world penalty factors listed above.
         """)
 
 if __name__ == "__main__":
