@@ -89,6 +89,8 @@ class DeanForcesSimulator:
         r_end_mm: float,
         model: DeanModel,
         enforce_slide_limit: bool = True,
+        v_batch_ml: float = 5.0,
+        t_proc_target_min: float = 8.0,
     ) -> np.ndarray:
         """Centralized scoring logic shared between CLI and GUI."""
         # Normalize metrics for ranking
@@ -138,13 +140,13 @@ class DeanForcesSimulator:
             if r_start_mm < 2.0:
                 P_geom *= np.exp(-5.0 * (2.0 - r_start_mm)) 
 
-        # Process Time Penalty (User Request: 5 mL Batch Throughput)
-        # Instead of in-chip residence, we penalize the total time to wash 5 mL.
-        v_batch_m3 = 5.0e-6 # 5 mL
+        # Process Time Penalty (User Request: Variable Batch Throughput)
+        # Instead of in-chip residence, we penalize the total time to wash V_batch.
+        v_batch_m3 = v_batch_ml * 1.0e-6 
         q_m3_s = u_vals * (width_um * 1e-6) * (self.g.height_m)
         t_proc_min = (v_batch_m3 / np.maximum(q_m3_s, 1e-12)) / 60.0
         
-        t0_min = 8.0   # Comfortable wash time (minutes)
+        t0_min = t_proc_target_min
         beta_min = 0.15 # Decay rate
         
         P_time = np.ones_like(t_proc_min)
@@ -188,6 +190,8 @@ class DeanForcesSimulator:
         model: DeanModel,
         alpha: float,
         enforce_slide_limit: bool = True,
+        v_batch_ml: float = 5.0,
+        t_proc_target_min: float = 8.0,
     ) -> pd.DataFrame:
         """Core sweep logic for design optimization (Single Source of Truth)."""
         widths = np.linspace(width_start_um, width_end_um, n_width)
@@ -218,6 +222,7 @@ class DeanForcesSimulator:
                 dp_pa = (12.0 * self.g.mu * (est_L_mm * 1e-3) * u) / dh_m**2
                 dp_psi = dp_pa / 6894.76
                 t_res = (est_L_mm * 1e-3) / max(u, 0.01)
+                t_proc_min = ( (v_batch_ml * 1e-6 / (u * w * 1e-6 * height_um * 1e-6)) / 60.0 ) if u > 0 else 999.0
 
                 rows.append({
                     "width_um": w,
@@ -232,7 +237,7 @@ class DeanForcesSimulator:
                     "min_FL_over_FD": float(df["FL_over_FD"].min()),
                     "max_De": float(df["De"].max()),
                     "res_time_s": t_res,
-                    "t_proc_min": ( (5.0e-6 / (u * w * 1e-6 * self.g.height_m)) / 60.0 ) if u > 0 else 999.0,
+                    "t_proc_min": t_proc_min,
                     "delta_p_psi": dp_psi,
                 })
 
@@ -249,6 +254,8 @@ class DeanForcesSimulator:
             r_end_mm=r_end_mm,
             model=model,
             enforce_slide_limit=enforce_slide_limit,
+            v_batch_ml=v_batch_ml,
+            t_proc_target_min=t_proc_target_min,
         )
         
         # Normalize final scores to [0, 1] range for the current design space
@@ -501,8 +508,8 @@ class DeanForcesSimulator:
         )
 
         # Left: forces
-        ax_force.loglog(df["dp_um"], df["FL_pN"], lw=2.5, color="tab:blue", label="Lift")
-        ax_force.loglog(df["dp_um"], df["FD_pN"], lw=2.5, color="tab:red", label="Dean drag")
+        ax_force.loglog(df["dp_um"], df["FL_pN"], lw=2.5, color="tab:purple", label="Lift")
+        ax_force.loglog(df["dp_um"], df["FD_pN"], lw=2.5, color="tab:green", label="Dean drag")
         ax_force.set_xlabel("Particle diameter (μm)")
         ax_force.set_ylabel("Force (pN)")
         ax_force.set_title("Forces")
@@ -545,8 +552,8 @@ class DeanForcesSimulator:
         )
 
         # Left: forces
-        ax_force.loglog(df["U_m_s"], df["FL_pN"], lw=2.5, color="tab:blue", label="Lift")
-        ax_force.loglog(df["U_m_s"], df["FD_pN"], lw=2.5, color="tab:red", label="Dean drag")
+        ax_force.loglog(df["U_m_s"], df["FL_pN"], lw=2.5, color="tab:purple", label="Lift")
+        ax_force.loglog(df["U_m_s"], df["FD_pN"], lw=2.5, color="tab:green", label="Dean drag")
         ax_force.set_xlabel("Mean axial velocity U (m/s)")
         ax_force.set_ylabel("Force (pN)")
         ax_force.set_title("Forces")
@@ -575,8 +582,8 @@ class DeanForcesSimulator:
         )
 
         # Left: forces along spiral
-        ax_force.plot(df["R_mm"], df["FL_pN"], lw=2.5, color="tab:blue", label="Lift")
-        ax_force.plot(df["R_mm"], df["FD_pN"], lw=2.5, color="tab:red", label="Dean drag")
+        ax_force.plot(df["R_mm"], df["FL_pN"], lw=2.5, color="tab:purple", label="Lift")
+        ax_force.plot(df["R_mm"], df["FD_pN"], lw=2.5, color="tab:green", label="Dean drag")
         ax_force.set_xlabel("Radius of curvature R (mm)")
         ax_force.set_ylabel("Force (pN)")
         ax_force.set_title("Forces along spiral")
@@ -584,7 +591,7 @@ class DeanForcesSimulator:
         ax_force.legend(frameon=False, loc="upper right")
 
         # Right: Dean metrics
-        ax_dean.plot(df["R_mm"], df["De"], lw=2.2, color="purple", label="De")
+        ax_dean.plot(df["R_mm"], df["De"], lw=2.2, color="tab:red", label="De")
         ax_dean.plot(
             df["R_mm"], df["Ud_m_s"] * 1e3, lw=2.2, color="tab:orange", label="Ud (mm/s)"
         )

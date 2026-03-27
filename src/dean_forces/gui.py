@@ -55,7 +55,9 @@ def run_gui():
                 help="Constraint: R_start >= 2.0mm (Inlets) and 2*R_end <= 24mm (Slide Limit)"
             )
             enforce_slide = st.checkbox("Enforce Glass Slide Limit (24mm)", value=True, help="Applies a soft penalty if the device exceeds 24mm diameter.")
-            res = st.select_slider("Grid resolution", options=[10, 25, 50, 75, 100], value=100)
+            v_batch_ml = st.number_input("Batch Volume (mL)", 0.1, 100.0, 5.0, step=0.5, help="Total volume of cell suspension to be processed.")
+            t_proc_target = st.number_input("Target Processing Time (min)", 1.0, 120.0, 8.0, step=1.0, help="Goal time to complete the wash of V_batch.")
+            res = st.select_slider("Grid resolution", options=[10, 25, 50, 75, 100, 150, 200, 250], value=100)
             run_sweep = st.button("Run Design Sweep", type="primary")
 
         if run_sweep:
@@ -74,6 +76,8 @@ def run_gui():
                     model=model,
                     alpha=alpha,
                     enforce_slide_limit=enforce_slide,
+                    v_batch_ml=v_batch_ml,
+                    t_proc_target_min=t_proc_target,
                 )
                 st.session_state["design_sweep_results"] = rdf
         
